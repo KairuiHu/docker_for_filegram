@@ -1,122 +1,192 @@
-# HippoCamp Replay Recorder
+# Filegram Replay Recorder
 
-Record AI agent file-operation traces as MP4 videos. The system replays timestamped events (file reads, writes, moves, directory creation, etc.) through a browser-based GUI inside Docker, and captures the screen with ffmpeg.
+## 这个项目是干什么的
 
-## Prerequisites
+把 AI agent 操作文件的**行为日志**，变成一段**屏幕录制视频（MP4）**。
 
-- Docker Desktop (with ARM64 support on Apple Silicon)
-- bash, ffmpeg (for verification)
+具体来说：AI agent（比如 Claude、GPT）在完成文件整理等任务时，会产生一系列操作记录——读了哪个文件、创建了哪个文件夹、把文件移到了哪里。这个项目把这些操作记录**"回放"**出来，像录屏一样生成视频。
 
-## Directory Structure
+## 核心原理
+
+整个流程可以理解为"录像机 + 演员"：
 
 ```
-.
-├── run_auto_record.sh          # Entry point: build + record one trace
-├── docker/
-│   ├── Dockerfile.replay       # Container image (Xvfb + Chromium + Flask)
-│   ├── record_replay.sh        # In-container 7-step pipeline
-│   └── webui/                  # Flask + SocketIO web UI
-│       ├── app.py              # Backend: replay engine, file browser, APIs
-│       ├── templates/index.html# Frontend: animated replay visualization
-│       ├── start_webui.sh
-│       ├── sync_wrappers
-│       ├── terminal_sync.py
-│       ├── webui_status.sh
-│       └── webui_stop.sh
-├── demo/                       # YOUR DATA (not in repo)
-│   ├── <profile>_<task>/       # Trajectory: events_clean.json + media/
-│   └── pilot/sandbox/<profile>_<task>/  # Workspace: initial file state
-└── recordings/                 # Output MP4 files (not in repo)
+你的数据（行为日志 + 初始文件）
+        │
+        ▼
+┌──────────────────────────────────┐
+│         Docker 容器               │
+│                                  │
+│  1. 虚拟屏幕（Xvfb）              │  ← 看不见的"显示器"
+│  2. 浏览器（Chromium）打开 WebUI   │  ← "演员"，展示文件操作动画
+│  3. WebUI 按时间顺序播放行为日志    │  ← "剧本"，告诉演员做什么
+│  4. ffmpeg 录屏                   │  ← "录像机"，把屏幕录下来
+│                                  │
+│  输出 → MP4 视频文件               │
+└──────────────────────────────────┘
 ```
 
-## Input Format
+**WebUI 是什么？** 一个网页界面，长得像桌面文件管理器。左边是文件树，右边是文件内容预览。它接收行为日志里的事件，然后用动画模拟出来——鼠标移动到文件上、双击打开、滚动阅读、右键菜单创建文件夹、拖拽移动文件，等等。
 
-Each recording requires two inputs:
+**Replay 是什么？** 就是"回放"。把之前记录下来的操作，按照原始时间间隔重新演一遍。比如日志里写的是 t=22s 读文件、t=64s 创建文件夹、t=80s 移动文件，WebUI 就会在对应的时间点做出这些动画。
 
-### 1. Trajectory (`demo/<name>/events_clean.json`)
+## 需要准备什么
 
-A JSON array of timestamped behavioral events:
+### 环境
+- **Docker Desktop**（Mac/Linux/Windows 都行，Apple Silicon Mac 原生支持）
 
+### 输入数据（2 样东西）
+
+#### 1. 行为日志（Trajectory）
+
+一个 JSON 文件，记录 AI agent 的每一步操作。每个事件有：
+- `event_type`：做了什么（读文件、写文件、移动文件……）
+- `timestamp`：什么时候做的（秒数，从 0 开始）
+- 其他字段：操作的具体信息
+
+示例（`events_clean.json`）：
 ```json
 [
-  {"event_type": "file_read",   "timestamp": 22.5, "file_path": "report.md", ...},
-  {"event_type": "dir_create",  "timestamp": 64.6, "dir_path": "01_docs", ...},
-  {"event_type": "file_move",   "timestamp": 80.4, "old_path": "report.md", "new_path": "01_docs", ...},
-  {"event_type": "file_write",  "timestamp": 119.7, "file_path": "01_docs/README.md", ...}
+  {
+    "event_type": "file_read",
+    "timestamp": 22.5,
+    "file_path": "birthday_plan.txt"
+  },
+  {
+    "event_type": "dir_create",
+    "timestamp": 64.6,
+    "dir_path": "01_emails/personal"
+  },
+  {
+    "event_type": "file_move",
+    "timestamp": 80.4,
+    "old_path": "birthday_plan.txt",
+    "new_path": "01_emails/personal"
+  },
+  {
+    "event_type": "file_write",
+    "timestamp": 119.7,
+    "file_path": "01_emails/README.md",
+    "operation": "create"
+  }
 ]
 ```
 
-Supported event types: `file_read`, `file_write`, `file_edit`, `file_move`, `file_rename`, `file_copy`, `file_delete`, `file_search`, `file_browse`, `dir_create`, `context_switch`, `cross_file_reference`, `error_encounter`, `error_response`.
+支持的 event_type：
 
-### 2. Workspace (`demo/pilot/sandbox/<name>/`)
+| 类型 | 含义 | 视频中的表现 |
+|------|------|------------|
+| `file_read` | 读/打开文件 | 鼠标点击文件，打开预览，滚动阅读 |
+| `file_write` | 创建/写入文件 | 弹出编辑器动画，显示内容 |
+| `file_edit` | 编辑已有文件 | 显示 diff 对比 |
+| `file_move` | 移动文件到其他目录 | 右键菜单 → 剪切 → 粘贴动画 |
+| `file_rename` | 重命名文件 | 右键菜单 → 重命名动画 |
+| `file_copy` | 复制文件 | 右键菜单 → 复制 → 粘贴动画 |
+| `file_delete` | 删除文件 | 右键菜单 → 删除动画 |
+| `file_search` | 搜索文件 | 搜索框动画 |
+| `file_browse` | 浏览目录 | 展开文件夹 |
+| `dir_create` | 创建文件夹 | 右键 → 新建文件夹动画 |
+| `context_switch` | 切换到另一个文件 | 鼠标切换标签 |
+| `cross_file_reference` | 两个文件间的关联 | 并排对比视图 |
 
-The **initial** filesystem state before the agent acts. Place all files the agent will interact with here. This directory is mounted into the container at `/hippocamp/data` and displayed as the file tree in the GUI.
+#### 2. 工作空间（Workspace）
 
-**Important:** The workspace must be the *starting* state, not the end state. The replay engine only visualizes events -- it does not execute actual file operations on disk.
+一个文件夹，里面放着 **agent 开始操作之前**的所有文件。这就是"初始状态"。
 
-## Usage
-
-### Record a single trace
-
-```bash
-./run_auto_record.sh <profile_task_name> [speed]
-
-# Examples:
-./run_auto_record.sh p9_visual_organizer_T-05 1.0
-./run_auto_record.sh p1_methodical_T-05 0.5   # half speed
+比如一个文件整理任务，agent 要把散乱的文件分类到文件夹里。那 workspace 就应该是：
+```
+workspace/
+├── birthday_plan.txt      ← 散乱在根目录
+├── coffee_promo.eml       ← 散乱在根目录
+├── campus_photo.jpg       ← 散乱在根目录
+├── resume.pdf             ← 散乱在根目录
+└── ...（其他待整理的文件）
 ```
 
-Output: `recordings/<profile_task_name>.mp4`
+**不要**放 agent 操作完成后的结果（比如已经分好类的文件夹）。
 
-### Batch record all traces
+## 文件放在哪里
+
+```
+项目根目录/
+├── demo/
+│   ├── my_task_name/                          ← 行为日志
+│   │   ├── events_clean.json                  ← 必需
+│   │   └── media/                             ← 可选，文件内容快照
+│   │       ├── blobs/                         ← 用于 file_write 时显示内容
+│   │       └── manifest.json
+│   └── pilot/sandbox/my_task_name/            ← 工作空间（初始文件）
+│       ├── file1.txt
+│       ├── file2.pdf
+│       └── ...
+├── recordings/                                ← 输出目录（自动创建）
+│   └── my_task_name.mp4                       ← 生成的视频
+├── run_auto_record.sh                         ← 运行脚本
+└── docker/                                    ← 容器代码（不用动）
+```
+
+## 怎么跑
+
+### 录制单个任务
+
+```bash
+./run_auto_record.sh <任务名> [播放速度]
+```
+
+任务名 = `demo/` 下面行为日志文件夹的名字，同时也是 `demo/pilot/sandbox/` 下面工作空间文件夹的名字。
+
+```bash
+# 正常速度
+./run_auto_record.sh my_task_name 1.0
+
+# 2 倍速（视频时长减半）
+./run_auto_record.sh my_task_name 2.0
+```
+
+脚本会自动：构建 Docker 镜像 → 启动容器 → 回放 → 录屏 → 输出到 `recordings/my_task_name.mp4`
+
+### 批量录制
 
 ```bash
 for d in demo/p*/; do
   name=$(basename "$d")
   [ "$name" = "pilot" ] && continue
   [ ! -f "$d/events_clean.json" ] && continue
-  [ -f "recordings/${name}.mp4" ] && echo "SKIP: $name" && continue
+  [ -f "recordings/${name}.mp4" ] && echo "跳过: $name（已存在）" && continue
   ./run_auto_record.sh "$name" 1.0
 done
 ```
 
-### Use your own data
+## 完整示例：从零开始
 
-1. Create your trajectory file:
-   ```
-   demo/my_task/events_clean.json
-   ```
+```bash
+# 1. 克隆项目
+git clone https://github.com/KairuiHu/docker_for_filegram.git
+cd docker_for_filegram
 
-2. Create your workspace directory with the initial files:
-   ```
-   demo/pilot/sandbox/my_task/
-   ├── file1.txt
-   ├── file2.pdf
-   └── ...
-   ```
+# 2. 准备数据（假设你有一个叫 my_experiment 的任务）
+mkdir -p demo/my_experiment
+mkdir -p demo/pilot/sandbox/my_experiment
 
-3. Run:
-   ```bash
-   ./run_auto_record.sh my_task 1.0
-   ```
+# 把你的行为日志放进去
+cp /path/to/your/events_clean.json demo/my_experiment/
 
-## How It Works
+# 把初始文件放进去
+cp /path/to/your/initial_files/* demo/pilot/sandbox/my_experiment/
 
-Inside the Docker container, `record_replay.sh` runs a 7-step pipeline:
+# 3. 录制
+./run_auto_record.sh my_experiment 1.0
 
-1. Start Xvfb virtual display (1920x1080)
-2. Start Flask + SocketIO web server
-3. Open Chromium browser to localhost:8080
-4. Start ffmpeg screen recording
-5. POST `/api/replay/start` with the events file path
-6. Poll `/api/replay/status` until completion
-7. Stop recording, output MP4
+# 4. 查看结果
+open recordings/my_experiment.mp4    # macOS
+# 或
+xdg-open recordings/my_experiment.mp4  # Linux
+```
 
-The web UI receives events via WebSocket and animates them: cursor movement, file opening/reading with scroll, directory creation, file drag-and-drop moves, context menus, toast notifications, etc.
+## 注意事项
 
-## Notes
-
-- Runs natively on ARM64 (Apple Silicon). No x86 emulation needed.
-- `--shm-size=2g` is required for Chromium stability.
-- dbus errors in the logs are harmless (no system bus in container).
-- Video resolution: 1920x1080 @ 30fps.
+- 首次运行会构建 Docker 镜像（下载依赖），需要几分钟，之后会用缓存
+- 每个任务录制耗时 ≈ 行为日志的总时长 + 30 秒启动开销
+- 输出视频：1920x1080，30fps
+- Apple Silicon Mac 原生运行，不需要 x86 模拟
+- 日志中的 dbus 错误可以忽略（容器内没有系统总线，不影响功能）
