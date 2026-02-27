@@ -1,0 +1,14 @@
+# Data - trajectories and workspaces
+demo/
+
+# Output recordings
+recordings/
+
+# macOS
+.DS_Store
+
+# Claude IDE
+.claude/
+
+# Misc
+0）

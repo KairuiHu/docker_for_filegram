@@ -1,0 +1,45 @@
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    xvfb \
+    chromium \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+    flask \
+    flask-socketio \
+    requests
+
+WORKDIR /hippocamp
+
+COPY docker/webui /hippocamp/webui
+
+# Pre-download Socket.IO to avoid CDN dependency at runtime
+RUN mkdir -p /hippocamp/webui/static && \
+    curl -fsSL \
+    https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.4/socket.io.min.js \
+    -o /hippocamp/webui/static/socket.io.min.js
+
+RUN mkdir -p /hippocamp/output /hippocamp/metadata /hippocamp/api /hippocamp/recordings
+
+ENV HIPPOCAMP_DATA_DIR=/hippocamp/data
+ENV HIPPOCAMP_OUTPUT_DIR=/hippocamp/output
+ENV HIPPOCAMP_METADATA_DIR=/hippocamp/metadata
+ENV HIPPOCAMP_PORT=8080
+ENV HIPPOCAMP_REPLAY_EVENTS=/hippocamp/replay/events_clean.json
+ENV HIPPOCAMP_REPLAY_AUTOSTART=0
+ENV HIPPOCAMP_REPLAY_SPEED=1.0
+ENV DISPLAY=:99
+
+COPY docker/record_replay.sh /hippocamp/record_replay.sh
+RUN chmod +x /hippocamp/record_replay.sh
+
+EXPOSE 8080
+
+CMD ["/hippocamp/record_replay.sh"]

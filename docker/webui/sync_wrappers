@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+sync_wrappers - Command-line wrappers with WebUI sync
+
+These wrappers replace the original API commands when WebUI sync is enabled.
+They execute the command and notify the WebUI of the result.
+"""
+import sys
+import os
+import json
+from datetime import datetime
+
+COMMAND_PIPE = '/hippocamp/output/.webui/hippocamp_commands'
+
+def notify_webui(command, result=None, is_error=False):
+    """Send command notification to WebUI"""
+    try:
+        if os.path.exists(COMMAND_PIPE):
+            entry = {
+                'command': command,
+                'result': result,
+                'is_error': is_error,
+                'timestamp': datetime.now().strftime('%H:%M:%S')
+            }
+            # Use non-blocking write
+            fd = os.open(COMMAND_PIPE, os.O_WRONLY | os.O_NONBLOCK)
+            try:
+                os.write(fd, (json.dumps(entry) + '\n').encode())
+            finally:
+                os.close(fd)
+    except Exception:
+        pass  # WebUI might not be running
+
+
+# ==================== Commands ====================
+
+def cmd_return_txt():
+    """return_txt with sync"""
+    sys.path.insert(0, '/hippocamp/api')
+    from hippocamp_api import return_txt
+
+    if len(sys.argv) < 2:
+        print("Usage: return_txt <file_path>")
+        sys.exit(1)
+
+    file_path = sys.argv[1]
+    cmd = f"return_txt {file_path}"
+
+    result = return_txt(file_path)
+    notify_webui(cmd, result, is_error=not result.get('success'))
+
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    sys.exit(0 if result.get('success') else 1)
+
+
+def cmd_return_img():
+    """return_img with sync"""
+    sys.path.insert(0, '/hippocamp/api')
+    from hippocamp_api import return_img
+
+    if len(sys.argv) < 2:
+        print("Usage: return_img <file_path> [output_path]")
+        sys.exit(1)
+
+    file_path = sys.argv[1]
+    output_path = sys.argv[2] if len(sys.argv) > 2 else None
+
+    cmd = f"return_img {file_path}"
+    if output_path:
+        cmd += f" {output_path}"
+
+    result = return_img(file_path, output_path)
+    notify_webui(cmd, result, is_error=not result.get('success'))
+
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    sys.exit(0 if result.get('success') else 1)
+
+
+def cmd_return_ori():
+    """return_ori with sync"""
+    sys.path.insert(0, '/hippocamp/api')
+    from hippocamp_api import return_ori
+
+    if len(sys.argv) < 2:
+        print("Usage: return_ori <file_path> [output_path]")
+        sys.exit(1)
+
+    file_path = sys.argv[1]
+    output_path = sys.argv[2] if len(sys.argv) > 2 else None
+
+    cmd = f"return_ori {file_path}"
+    if output_path:
+        cmd += f" {output_path}"
+
+    result = return_ori(file_path, output_path)
+    notify_webui(cmd, result, is_error=not result.get('success'))
+
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    sys.exit(0 if result.get('success') else 1)
+
+
+def cmd_return_metadata(cmd_name="return_metadata"):
+    """return_metadata with sync"""
+    sys.path.insert(0, '/hippocamp/api')
+    from hippocamp_api import get_metadata
+
+    if len(sys.argv) < 2:
+        print("Usage: return_metadata <file_path>")
+        sys.exit(1)
+
+    file_path = sys.argv[1]
+    cmd = f"{cmd_name} {file_path}"
+
+    result = get_metadata(file_path)
+    notify_webui(cmd, result, is_error=not result.get('success'))
+
+    if result.get('success'):
+        meta = result.get('metadata', {})
+        print("=" * 50)
+        print(f"File: {meta.get('file_path', 'N/A')}")
+        print("=" * 50)
+        print(f"ID:               {meta.get('id', 'N/A')}")
+        print(f"File Type:        {meta.get('file_type', 'N/A')}")
+        print(f"File Modality:    {meta.get('file_modality', 'N/A')}")
+        print("-" * 50)
+        print(f"Creation Date:    {meta.get('creation_date', 'N/A')}")
+        print(f"Modification Date:{meta.get('modification_date', 'N/A')}")
+        print("-" * 50)
+        lat = meta.get('latitude')
+        lon = meta.get('longitude')
+        loc = meta.get('location', '')
+        if lat and lon:
+            print(f"Latitude:         {lat}")
+            print(f"Longitude:        {lon}")
+        if loc:
+            print(f"Location:         {loc}")
+        print("=" * 50)
+        print("\n[JSON]")
+        print(json.dumps(meta, indent=2, ensure_ascii=False))
+    else:
+        print(f"Error: {result.get('error')}")
+
+    sys.exit(0 if result.get('success') else 1)
+
+
+def cmd_list_files():
+    """list_files with sync"""
+    import fnmatch
+    sys.path.insert(0, '/hippocamp/api')
+    from hippocamp_api import list_files
+
+    pattern = sys.argv[1] if len(sys.argv) > 1 else None
+    cmd = "list_files"
+    if pattern:
+        cmd += f" {pattern}"
+
+    try:
+        files = list_files()
+
+        if pattern:
+            if pattern.endswith('/'):
+                files = [f for f in files if f.startswith(pattern)]
+            else:
+                files = [f for f in files if fnmatch.fnmatch(f, pattern) or fnmatch.fnmatch(os.path.basename(f), pattern)]
+
+        result = {'success': True, 'files': files, 'total': len(files)}
+        notify_webui(cmd, result)
+
+        print(f"Total files: {len(files)}")
+        print("-" * 50)
+        for f in files:
+            print(f)
+
+        if not sys.stdout.isatty():
+            print("\n[JSON]")
+            print(json.dumps(files, indent=2))
+
+        sys.exit(0)
+
+    except Exception as e:
+        result = {'success': False, 'error': str(e)}
+        notify_webui(cmd, result, is_error=True)
+        print(f"Error: {e}")
+        sys.exit(1)
+
+
+# Dispatch
+if __name__ == '__main__':
+    prog = os.path.basename(sys.argv[0])
+
+    if prog == 'return_txt' or '--return_txt' in sys.argv:
+        cmd_return_txt()
+    elif prog == 'return_img' or '--return_img' in sys.argv:
+        cmd_return_img()
+    elif prog == 'return_ori' or '--return_ori' in sys.argv:
+        cmd_return_ori()
+    elif prog == 'return_metadata' or '--return_metadata' in sys.argv:
+        cmd_return_metadata("return_metadata")
+    elif prog == 'list_files' or '--list_files' in sys.argv:
+        cmd_list_files()
+    else:
+        print("sync_wrappers - API commands with WebUI sync")
+        print("Run as symlink: return_txt, return_img, return_ori, return_metadata, list_files")
