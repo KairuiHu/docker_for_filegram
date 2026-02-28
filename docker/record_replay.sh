@@ -2,7 +2,7 @@
 set -euo pipefail
 
 RECORDING_PATH="/hippocamp/recordings/${DATASET_NAME:-replay}.mp4"
-EVENTS_FILE="${HIPPOCAMP_REPLAY_EVENTS:-/hippocamp/replay/events_clean.json}"
+EVENTS_FILE="${HIPPOCAMP_REPLAY_EVENTS:-/hippocamp/replay/events.json}"
 SPEED="${HIPPOCAMP_REPLAY_SPEED:-1.0}"
 WEBUI_PORT="${HIPPOCAMP_PORT:-8080}"
 WEBUI_URL="http://localhost:$WEBUI_PORT"

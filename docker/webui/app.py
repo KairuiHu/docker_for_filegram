@@ -625,6 +625,20 @@ def _resolve_replay_events_path(path_value=''):
     return None
 
 
+_BEHAVIORAL_EVENTS = {
+    "file_read", "file_write", "file_edit", "file_rename", "file_move",
+    "dir_create", "file_delete", "file_copy", "file_browse", "file_search",
+    "context_switch", "cross_file_reference",
+}
+_STRIP_FIELDS = {"message_id", "model_provider", "model_name", "session_id", "event_id", "profile_id"}
+_PATH_KEYS = (
+    "file_path", "old_path", "new_path", "dir_path",
+    "target_directory", "from_file", "to_file",
+    "source_file", "target_file", "source_path", "dest_path",
+    "directory_path",
+)
+
+
 def _load_replay_events(events_path):
     with open(events_path, 'r', encoding='utf-8') as f:
         payload = json.load(f)
@@ -636,18 +650,77 @@ def _load_replay_events(events_path):
     if not isinstance(payload, list):
         raise ValueError('events file must be a JSON array')
 
+    # Detect format: new format has epoch-ms timestamps (> 1e12)
+    sample_ts = None
+    for evt in payload:
+        if isinstance(evt, dict) and evt.get('timestamp'):
+            sample_ts = float(evt['timestamp'])
+            break
+    is_new_format = sample_ts is not None and sample_ts > 1e12
+
+    # Detect sandbox prefix from paths (for stripping absolute paths)
+    sandbox_prefix = ""
+    if is_new_format:
+        for evt in payload:
+            if not isinstance(evt, dict):
+                continue
+            for key in _PATH_KEYS:
+                val = evt.get(key)
+                if isinstance(val, str) and '/sandbox/' in val:
+                    # e.g. /Users/choiszt/Desktop/code/Synvo/FileGram/sandbox/p10_T-01/
+                    idx = val.index('/sandbox/')
+                    # Find the next / after the profile_task dir
+                    rest = val[idx + len('/sandbox/'):]
+                    slash_pos = rest.find('/')
+                    if slash_pos >= 0:
+                        sandbox_prefix = val[:idx + len('/sandbox/') + slash_pos + 1]
+                    break
+            if sandbox_prefix:
+                break
+
     indexed_events = []
     for idx, event in enumerate(payload):
         if not isinstance(event, dict):
             continue
-        normalized = dict(event)
+
+        # Filter to behavioral events only (new format)
+        if is_new_format and event.get('event_type') not in _BEHAVIORAL_EVENTS:
+            continue
+
+        # Strip extra fields
+        normalized = {k: v for k, v in event.items() if k not in _STRIP_FIELDS}
+
+        # Strip absolute path prefixes
+        if sandbox_prefix:
+            prefix_no_slash = sandbox_prefix.rstrip('/')
+            for key in _PATH_KEYS:
+                if key in normalized and isinstance(normalized[key], str):
+                    normalized[key] = normalized[key].replace(sandbox_prefix, '')
+                    normalized[key] = normalized[key].replace(prefix_no_slash, '')
+                    if normalized[key].startswith('/'):
+                        normalized[key] = normalized[key][1:]
+            if 'files_listed' in normalized and isinstance(normalized['files_listed'], list):
+                normalized['files_listed'] = [
+                    f.replace(sandbox_prefix, '').lstrip('/') if isinstance(f, str) else f
+                    for f in normalized['files_listed']
+                ]
+
         try:
-            normalized['timestamp'] = float(normalized.get('timestamp', 0.0))
+            ts = float(normalized.get('timestamp', 0.0))
+            # Convert epoch-ms to raw ms value (will be converted to relative seconds below)
+            normalized['timestamp'] = ts
         except Exception:
             normalized['timestamp'] = 0.0
         indexed_events.append((idx, normalized))
 
     indexed_events.sort(key=lambda row: (row[1].get('timestamp', 0.0), row[0]))
+
+    # Convert timestamps to relative seconds
+    if indexed_events and is_new_format:
+        base_ts = indexed_events[0][1]['timestamp']
+        for _, event in indexed_events:
+            event['timestamp'] = (event['timestamp'] - base_ts) / 1000.0
+
     return [event for _, event in indexed_events]
 
 
