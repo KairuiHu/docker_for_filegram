@@ -6827,26 +6827,40 @@
             const total = Number(packet.total || replaySessionState.events_total || 0);
             showAgentActionBanner(`[${index}/${total}] ${eventType}`, 1800);
 
-            if (eventType === 'file_search') {
-                if (prevType === 'file_search') {
-                    await replaySleep(120, 220);
-                    return;
+            const ackData = { index: packet.index, event_type: eventType };
+            const t0 = performance.now();
+            try {
+                if (eventType === 'file_search') {
+                    if (prevType === 'file_search') {
+                        await replaySleep(120, 220);
+                        ackData.skipped = true;
+                    } else {
+                        await replayHandleFileSearch(event);
+                    }
                 }
-                await replayHandleFileSearch(event);
+                else if (eventType === 'file_browse') await replayHandleFileBrowse(event);
+                else if (eventType === 'dir_create') await replayHandleDirCreate(event);
+                else if (eventType === 'file_write') await replayHandleFileWrite(event);
+                else if (eventType === 'file_edit') await replayHandleFileEdit(event);
+                else if (eventType === 'file_move') await replayHandleFileMove(event);
+                else if (eventType === 'file_rename') await replayHandleFileRename(event);
+                else if (eventType === 'file_copy') await replayHandleFileCopy(event);
+                else if (eventType === 'file_delete') await replayHandleFileDelete(event);
+                else if (eventType === 'file_read') await replayHandleFileRead(event);
+                else if (eventType === 'context_switch') await replayHandleContextSwitch(event);
+                else if (eventType === 'cross_file_reference') await replayHandleCrossFileReference(event);
+                else if (eventType === 'error_encounter') await replayHandleErrorEncounter(event);
+                else if (eventType === 'error_response') await replayHandleErrorResponse(event);
+                else { ackData.unhandled = true; }
+                ackData.success = true;
+            } catch (err) {
+                ackData.success = false;
+                ackData.error = String(err.message || err).slice(0, 200);
             }
-            else if (eventType === 'file_browse') await replayHandleFileBrowse(event);
-            else if (eventType === 'dir_create') await replayHandleDirCreate(event);
-            else if (eventType === 'file_write') await replayHandleFileWrite(event);
-            else if (eventType === 'file_edit') await replayHandleFileEdit(event);
-            else if (eventType === 'file_move') await replayHandleFileMove(event);
-            else if (eventType === 'file_rename') await replayHandleFileRename(event);
-            else if (eventType === 'file_copy') await replayHandleFileCopy(event);
-            else if (eventType === 'file_delete') await replayHandleFileDelete(event);
-            else if (eventType === 'file_read') await replayHandleFileRead(event);
-            else if (eventType === 'context_switch') await replayHandleContextSwitch(event);
-            else if (eventType === 'cross_file_reference') await replayHandleCrossFileReference(event);
-            else if (eventType === 'error_encounter') await replayHandleErrorEncounter(event);
-            else if (eventType === 'error_response') await replayHandleErrorResponse(event);
+            ackData.duration_ms = Math.round(performance.now() - t0);
+            if (typeof socket !== 'undefined' && socket.connected) {
+                socket.emit('replay_event_ack', ackData);
+            }
             hideAgentCursorLater(agentMs(760));
         }
 

@@ -97,6 +97,12 @@ replay_state = {
     'speed': REPLAY_DEFAULT_SPEED,
     'events_total': 0,
     'events_sent': 0,
+    'events_acked': 0,
+    'events_failed': 0,
+    'events_skipped': 0,
+    'events_unhandled': 0,
+    'failed_events': [],
+    'event_durations': [],
     'last_event_type': '',
     'last_event_ts': None,
     'started_at': None,
@@ -846,6 +852,12 @@ def _start_replay_session(events_path, speed):
             'speed': max(0.05, float(speed or 1.0)),
             'events_total': len(events),
             'events_sent': 0,
+            'events_acked': 0,
+            'events_failed': 0,
+            'events_skipped': 0,
+            'events_unhandled': 0,
+            'failed_events': [],
+            'event_durations': [],
             'last_event_type': '',
             'last_event_ts': None,
             'started_at': datetime.now(timezone.utc).isoformat(),
@@ -1210,6 +1222,37 @@ def replay_status():
     return jsonify({'success': True, 'state': _replay_state_snapshot()})
 
 
+@app.route('/api/replay/report')
+def replay_report():
+    """Return detailed replay test report with per-event ack tracking."""
+    snap = _replay_state_snapshot()
+    total = snap.get('events_total', 0)
+    acked = snap.get('events_acked', 0)
+    failed = snap.get('events_failed', 0)
+    skipped = snap.get('events_skipped', 0)
+    unhandled = snap.get('events_unhandled', 0)
+    durations = snap.get('event_durations', [])
+    report = {
+        'events_total': total,
+        'events_sent': snap.get('events_sent', 0),
+        'events_acked': acked,
+        'events_failed': failed,
+        'events_skipped': skipped,
+        'events_unhandled': unhandled,
+        'failed_events': snap.get('failed_events', []),
+        'completed': snap.get('completed', False),
+        'running': snap.get('running', False),
+        'duration_stats': {
+            'min_ms': min(durations) if durations else 0,
+            'max_ms': max(durations) if durations else 0,
+            'avg_ms': round(sum(durations) / len(durations), 1) if durations else 0,
+            'total_ms': sum(durations),
+        },
+        'pass': (snap.get('events_sent', 0) == total and failed == 0 and acked > 0 and snap.get('completed', False)),
+    }
+    return jsonify({'success': True, 'report': report})
+
+
 @app.route('/api/replay/start', methods=['POST'])
 def replay_start():
     data = request.get_json(silent=True) or {}
@@ -1471,6 +1514,28 @@ def handle_disconnect():
     with replay_clients_cv:
         replay_connected_clients = max(0, replay_connected_clients - 1)
         replay_clients_cv.notify_all()
+
+
+@socketio.on('replay_event_ack')
+def handle_replay_event_ack(data):
+    """Track frontend acknowledgment of processed replay events."""
+    if not data or not isinstance(data, dict):
+        return
+    with replay_state_lock:
+        replay_state['events_acked'] = replay_state.get('events_acked', 0) + 1
+        if data.get('duration_ms') is not None:
+            replay_state['event_durations'].append(data['duration_ms'])
+        if data.get('skipped'):
+            replay_state['events_skipped'] = replay_state.get('events_skipped', 0) + 1
+        if data.get('unhandled'):
+            replay_state['events_unhandled'] = replay_state.get('events_unhandled', 0) + 1
+        if not data.get('success'):
+            replay_state['events_failed'] = replay_state.get('events_failed', 0) + 1
+            replay_state['failed_events'].append({
+                'index': data.get('index'),
+                'event_type': data.get('event_type', ''),
+                'error': data.get('error', ''),
+            })
 
 
 def broadcast_bash_operation(command, result):

@@ -38,7 +38,8 @@ ENV HIPPOCAMP_REPLAY_SPEED=1.0
 ENV DISPLAY=:99
 
 COPY docker/record_replay.sh /hippocamp/record_replay.sh
-RUN chmod +x /hippocamp/record_replay.sh
+COPY docker/test_replay.sh /hippocamp/test_replay.sh
+RUN chmod +x /hippocamp/record_replay.sh /hippocamp/test_replay.sh
 
 EXPOSE 8080
 

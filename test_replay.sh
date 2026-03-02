@@ -1,21 +1,17 @@
 #!/usr/bin/env bash
+# test_replay.sh — Run replay validation test for a single trace (no video recording)
+# Usage: ./test_replay.sh <profile_task_name> [speed]
 set -euo pipefail
 
 usage() {
   echo "Usage: $0 <profile_task_name> [speed]"
   echo ""
+  echo "Runs replay validation WITHOUT video recording."
+  echo "Checks that all events are processed by the frontend."
+  echo ""
   echo "Examples:"
-  echo "  $0 p10_silent_auditor_T-01 1.0"
-  echo "  $0 p1_methodical_T-05 0.5"
-  echo ""
-  echo "Data layout (filegram_data/):"
-  echo "  signal/<profile_task>/events.json   - trajectory"
-  echo "  workspace/tXX_workspace/            - initial file state"
-  echo ""
-  echo "Available traces:"
-  for d in "$(cd "$(dirname "$0")" && pwd)"/filegram_data/signal/p*/; do
-    [ -f "$d/events.json" ] && echo "  $(basename "$d")"
-  done
+  echo "  $0 p10_silent_auditor_T-01"
+  echo "  $0 p10_silent_auditor_T-01 2.0"
   exit 1
 }
 
@@ -31,7 +27,6 @@ SIGNAL_DIR="$REPO_ROOT/filegram_data/signal/$PROFILE"
 
 # Extract task number from profile name (e.g., p10_silent_auditor_T-01 -> 01)
 TASK_NUM=$(echo "$PROFILE" | grep -oE 'T-[0-9]+$' | sed 's/T-//')
-# Use python to avoid bash octal issues with 08, 09
 TASK_NUM_PAD=$(python3 -c "print(f'{int(\"$TASK_NUM\"):02d}')")
 WORKSPACE_DIR="$REPO_ROOT/filegram_data/workspace/t${TASK_NUM_PAD}_workspace"
 
@@ -53,23 +48,23 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 IMAGE="hippocamp-replay:latest"
-CONTAINER="hippocamp-replay-${PROFILE}"
+CONTAINER="hippocamp-test-${PROFILE}"
 
-echo "=== Auto Record: $PROFILE (speed=$SPEED) ==="
+echo "=== Replay Test: $PROFILE (speed=$SPEED) ==="
 echo "Signal:    $SIGNAL_DIR"
 echo "Workspace: $WORKSPACE_DIR"
 echo ""
 
-# Build image (only rebuilds if files changed)
-echo "[1/3] Building Docker image..."
+# Build image (reuses cache)
+echo "[1/2] Building Docker image..."
 docker build \
   -f "$REPO_ROOT/docker/Dockerfile.replay" -t "$IMAGE" "$REPO_ROOT"
 
 # Remove old container if exists
 docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 
-# Run container
-echo "[2/3] Running replay + recording..."
+# Run test container (uses test entrypoint instead of record_replay.sh)
+echo "[2/2] Running replay test..."
 docker run --rm \
   --shm-size=2g \
   --name "$CONTAINER" \
@@ -78,14 +73,14 @@ docker run --rm \
   -v "$OUTPUT_DIR:/hippocamp/recordings" \
   -e DATASET_NAME="$PROFILE" \
   -e HIPPOCAMP_REPLAY_SPEED="$SPEED" \
+  --entrypoint /hippocamp/test_replay.sh \
   "$IMAGE"
 
+EXIT_CODE=$?
+
 echo ""
-echo "[3/3] Done!"
-if [ -f "$OUTPUT_DIR/$PROFILE.mp4" ]; then
-  SIZE=$(du -h "$OUTPUT_DIR/$PROFILE.mp4" | cut -f1)
-  echo "Video: $OUTPUT_DIR/$PROFILE.mp4 ($SIZE)"
-else
-  echo "ERROR: Video file not generated" >&2
-  exit 1
+if [ -f "$OUTPUT_DIR/${PROFILE}_report.json" ]; then
+  echo "Report: $OUTPUT_DIR/${PROFILE}_report.json"
 fi
+
+exit $EXIT_CODE
